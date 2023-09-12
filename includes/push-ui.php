@@ -7,6 +7,9 @@
 
 namespace Distributor\PushUI;
 
+use Distributor\EnqueueScript;
+use Distributor\Utils;
+
 /**
  * Setup actions and filters
  *
@@ -36,10 +39,17 @@ function setup() {
  * @return  bool
  */
 function syndicatable() {
+	// Retrieve the current global post, bail if not set.
+	$post = get_post();
+	if ( empty( $post ) ) {
+		return false;
+	}
+
 	/**
 	 * Filter Distributor capabilities allowed to syndicate content.
 	 *
 	 * @hook dt_syndicatable_capabilities
+	 * @tutorial snippets
 	 *
 	 * @param {string} edit_posts The capability allowed to syndicate content.
 	 *
@@ -49,30 +59,41 @@ function syndicatable() {
 		return false;
 	}
 
+	$distributable_post_types = \Distributor\Utils\distributable_post_types();
+
+	/**
+	 * Filter the post types that should be available for push.
+	 *
+	 * Helpful for sites that want to push custom post type content to another site.
+	 *
+	 * @hook dt_available_push_post_types
+	 *
+	 * @param {array} Post types that are distributable.
+	 *
+	 * @return {array} Post types available for push.
+	 */
+	$distributable_post_types = apply_filters( 'dt_available_push_post_types', $distributable_post_types );
+
 	if ( is_admin() ) {
 
 		global $pagenow;
 
-		if ( 'post.php' !== $pagenow ) {
+		if ( 'post.php' !== $pagenow && 'post-new.php' !== $pagenow ) {
 			return false;
 		}
 	} else {
-		if ( ! is_singular( \Distributor\Utils\distributable_post_types() ) ) {
+		if ( ! is_singular( $distributable_post_types ) ) {
 			return false;
 		}
 	}
 
-	global $post;
-
-	if ( empty( $post ) ) {
-		return;
-	}
-
-	if ( ! in_array( $post->post_status, \Distributor\Utils\distributable_post_statuses(), true ) ) {
+	// If we're using the classic editor, we need to make sure the post has a distributable status.
+	if ( ! Utils\is_using_gutenberg( $post ) && ! in_array( $post->post_status, Utils\distributable_post_statuses(), true ) ) {
 		return false;
 	}
 
-	if ( ! in_array( get_post_type(), \Distributor\Utils\distributable_post_types(), true ) || ( ! empty( $_GET['post_type'] ) && 'dt_ext_connection' === $_GET['post_type'] ) ) { // @codingStandardsIgnoreLine Nonce not required
+	$distributable_post_types = array_diff( $distributable_post_types, array( 'dt_ext_connection' ) );
+	if ( ! in_array( get_post_type(), $distributable_post_types, true ) ) {
 		return false;
 	}
 
@@ -223,159 +244,147 @@ function get_connections() {
  *
  * @since  0.8
  */
-// Start here
-function ajax_push()
-{
-	if (!check_ajax_referer('dt-push', 'nonce', false)) {
-		wp_send_json_error(new \WP_Error('invalid-referal', __('Invalid Ajax referer.', 'distributor')));
+function ajax_push() {
+	if ( ! check_ajax_referer( 'dt-push', 'nonce', false ) ) {
+		wp_send_json_error( new \WP_Error( 'invalid-referal', __( 'Invalid Ajax referer.', 'distributor' ) ) );
 		exit;
 	}
 
-	if (empty($_POST['postId'])) {
-		wp_send_json_error(new \WP_Error('no-post-id', __('No post ID provided.', 'distributor')));
-		exit;
-	} else
-	$pid= $_POST['postId'];
-
-
-	if (empty($_POST['connections'])) {
-		wp_send_json_error(new \WP_Error('no-connection', __('No connection provided.', 'distributor')));
+	if ( empty( $_POST['postId'] ) ) {
+		wp_send_json_error( new \WP_Error( 'no-post-id', __( 'No post ID provided.', 'distributor' ) ) );
 		exit;
 	}
-	$pidarray=[];
-	if(count($_POST['postsarray'])>0){
-		$pidarray =$_POST['postsarray'];
 
-	} else{
-		array_push($pidarray,$pid);
+	if ( empty( $_POST['connections'] ) ) {
+		wp_send_json_error( new \WP_Error( 'no-connection', __( 'No connection provided.', 'distributor' ) ) );
+		exit;
 	}
-	foreach ($pidarray as $pid) {
-	$connections = array_filter(array_map('distributor_sanitize_connection', wp_unslash($_POST['connections'])));
+	$connections = array_filter( array_map( 'distributor_sanitize_connection', wp_unslash( $_POST['connections'] ) ) );
 
-	$connection_map = get_post_meta(intval($pid), 'dt_connection_map', true);
-	if (empty($connection_map)) {
+	$connection_map = get_post_meta( intval( $_POST['postId'] ), 'dt_connection_map', true );
+	if ( empty( $connection_map ) ) {
 		$connection_map = array();
 	}
 
-	if (empty($connection_map['external'])) {
+	if ( empty( $connection_map['external'] ) ) {
 		$connection_map['external'] = array();
 	}
 
-	if (empty($connection_map['internal'])) {
+	if ( empty( $connection_map['internal'] ) ) {
 		$connection_map['internal'] = array();
 	}
 
 	$external_push_results = array();
 	$internal_push_results = array();
 
-	foreach ($connections as $connection) {
-		if ('external' === $connection['type']) {
-			$external_connection_type = get_post_meta($connection['id'], 'dt_external_connection_type', true);
-			$external_connection_url  = get_post_meta($connection['id'], 'dt_external_connection_url', true);
-			$external_connection_auth = get_post_meta($connection['id'], 'dt_external_connection_auth', true);
+	foreach ( $connections as $connection ) {
+		if ( 'external' === $connection['type'] ) {
+			$external_connection_type = get_post_meta( $connection['id'], 'dt_external_connection_type', true );
+			$external_connection_url  = get_post_meta( $connection['id'], 'dt_external_connection_url', true );
+			$external_connection_auth = get_post_meta( $connection['id'], 'dt_external_connection_auth', true );
 
-			if (empty($external_connection_auth)) {
+			if ( empty( $external_connection_auth ) ) {
 				$external_connection_auth = array();
 			}
 
-			if (!empty($external_connection_type) && !empty($external_connection_url)) {
-				$external_connection_class = \Distributor\Connections::factory()->get_registered()[$external_connection_type];
+			if ( ! empty( $external_connection_type ) && ! empty( $external_connection_url ) ) {
+				$external_connection_class = \Distributor\Connections::factory()->get_registered()[ $external_connection_type ];
 
-				$auth_handler = new $external_connection_class::$auth_handler_class($external_connection_auth);
+				$auth_handler = new $external_connection_class::$auth_handler_class( $external_connection_auth );
 
-				$external_connection = new $external_connection_class(get_the_title($connection['id']), $external_connection_url, $connection['id'], $auth_handler);
+				$external_connection = new $external_connection_class( get_the_title( $connection['id'] ), $external_connection_url, $connection['id'], $auth_handler );
 
 				$push_args = array();
 
-				if (!empty($connection_map['external'][(int) $connection['id']]) && !empty($connection_map['external'][(int) $connection['id']]['post_id'])) {
-					$push_args['remote_post_id'] = (int) $connection_map['external'][(int) $connection['id']]['post_id'];
+				if ( ! empty( $connection_map['external'][ (int) $connection['id'] ] ) && ! empty( $connection_map['external'][ (int) $connection['id'] ]['post_id'] ) ) {
+					$push_args['remote_post_id'] = (int) $connection_map['external'][ (int) $connection['id'] ]['post_id'];
 				}
 
-				if (!empty($_POST['postStatus'])) {
-					$push_args['post_status'] = sanitize_key(wp_unslash($_POST['postStatus']));
+				if ( ! empty( $_POST['postStatus'] ) ) {
+					$push_args['post_status'] = sanitize_key( wp_unslash( $_POST['postStatus'] ) );
 				}
 
-				$remote_post = $external_connection->push(intval($pid), $push_args);
+				$remote_post = $external_connection->push( intval( $_POST['postId'] ), $push_args );
 
 				/**
 				 * Record the external connection id's remote post id for this local post
 				 */
 
-				if (!is_wp_error($remote_post)) {
-					$connection_map['external'][(int) $connection['id']] = array(
+				if ( ! is_wp_error( $remote_post ) ) {
+					$connection_map['external'][ (int) $connection['id'] ] = array(
 						'post_id' => (int) $remote_post['id'],
 						'time'    => time(),
 					);
 
-					$external_push_results[(int) $connection['id']] = array(
+					$external_push_results[ (int) $connection['id'] ] = array(
 						'post_id' => (int) $remote_post['id'],
-						'date'    => gmdate('F j, Y g:i a'),
+						'date'    => gmdate( 'F j, Y g:i a' ),
 						'status'  => 'success',
 						'url'     => sprintf(
 							'%1$s/?p=%2$d',
-							get_site_url_from_rest_url($external_connection_url),
+							get_site_url_from_rest_url( $external_connection_url ),
 							(int) $remote_post['id']
 						),
-						'errors'  => empty($remote_post['push-errors']) ? array() : $remote_post['push-errors'],
+						'errors'  => empty( $remote_post['push-errors'] ) ? array() : $remote_post['push-errors'],
 					);
 
-					$external_connection->log_sync(array((int) $remote_post['id'] => absint(wp_unslash($pid))));
+					$external_connection->log_sync( array( (int) $remote_post['id'] => absint( wp_unslash( $_POST['postId'] ) ) ) );
 				} else {
-					$external_push_results[(int) $connection['id']] = array(
-						'date'   => gmdate('F j, Y g:i a'),
+					$external_push_results[ (int) $connection['id'] ] = array(
+						'date'   => gmdate( 'F j, Y g:i a' ),
 						'status' => 'fail',
-						'errors' => array($remote_post->get_error_message()),
+						'errors' => array( $remote_post->get_error_message() ),
 					);
 				}
 			}
 		} else {
-			$internal_connection = new \Distributor\InternalConnections\NetworkSiteConnection(get_site($connection['id']));
+			$internal_connection = new \Distributor\InternalConnections\NetworkSiteConnection( get_site( $connection['id'] ) );
 			$push_args           = array();
 
-			if (!empty($connection_map['internal'][(int) $connection['id']]) && !empty($connection_map['internal'][(int) $connection['id']]['post_id'])) {
-				$push_args['remote_post_id'] = (int) $connection_map['internal'][(int) $connection['id']]['post_id'];
+			if ( ! empty( $connection_map['internal'][ (int) $connection['id'] ] ) && ! empty( $connection_map['internal'][ (int) $connection['id'] ]['post_id'] ) ) {
+				$push_args['remote_post_id'] = (int) $connection_map['internal'][ (int) $connection['id'] ]['post_id'];
 			}
 
-			if (!empty($_POST['postStatus'])) {
-				$push_args['post_status'] = sanitize_key(wp_unslash($_POST['postStatus']));
+			if ( ! empty( $_POST['postStatus'] ) ) {
+				$push_args['post_status'] = sanitize_key( wp_unslash( $_POST['postStatus'] ) );
 			}
 
-			$remote_post = $internal_connection->push(intval($pid), $push_args);
+			$remote_post = $internal_connection->push( intval( $_POST['postId'] ), $push_args );
 
 			/**
 			 * Record the internal connection id's remote post id for this local post
 			 */
-			if (!is_wp_error($remote_post)) {
+			if ( ! is_wp_error( $remote_post ) ) {
 				$origin_site = get_current_blog_id();
-				switch_to_blog(intval($connection['id']));
-				$remote_url = get_permalink($remote_post['id']);
-				$internal_connection->log_sync(array($pid => $remote_post['id']), $origin_site);
+				switch_to_blog( intval( $connection['id'] ) );
+				$remote_url = get_permalink( $remote_post['id'] );
+				$internal_connection->log_sync( array( $_POST['postId'] => $remote_post['id'] ), $origin_site );
 				restore_current_blog();
 
-				$connection_map['internal'][(int) $connection['id']] = array(
+				$connection_map['internal'][ (int) $connection['id'] ] = array(
 					'post_id' => (int) $remote_post['id'],
 					'time'    => time(),
 				);
 
-				$internal_push_results[(int) $connection['id']] = array(
+				$internal_push_results[ (int) $connection['id'] ] = array(
 					'post_id' => (int) $remote_post['id'],
-					'url'     => esc_url_raw($remote_url),
-					'date'    => gmdate('F j, Y g:i a'),
+					'url'     => esc_url_raw( $remote_url ),
+					'date'    => gmdate( 'F j, Y g:i a' ),
 					'status'  => 'success',
-					'errors'  => empty($remote_post['push-errors']) ? array() : $remote_post['push-errors'],
+					'errors'  => empty( $remote_post['push-errors'] ) ? array() : $remote_post['push-errors'],
 				);
 			} else {
-				$internal_push_results[(int) $connection['id']] = array(
-					'errors' => array($remote_post->get_error_message()),
-					'date'   => gmdate('F j, Y g:i a'),
+				$internal_push_results[ (int) $connection['id'] ] = array(
+					'errors' => array( $remote_post->get_error_message() ),
+					'date'   => gmdate( 'F j, Y g:i a' ),
 					'status' => 'fail',
 				);
 			}
 		}
 	}
 
-	update_post_meta(intval($pid), 'dt_connection_map', $connection_map);
-}
+	update_post_meta( intval( $_POST['postId'] ), 'dt_connection_map', $connection_map );
+
 	wp_send_json_success(
 		array(
 			'results' => array(
@@ -396,40 +405,46 @@ function ajax_push()
  */
 function enqueue_scripts( $hook ) {
 	if ( ! syndicatable() ) {
-		// return;
+		return;
 	}
 
-	wp_enqueue_style( 'dt-push', plugins_url( '/dist/css/push.min.css', __DIR__ ), array(), DT_VERSION );
-	wp_enqueue_script( 'dt-push', plugins_url( '/dist/js/push.min.js', __DIR__ ), array( 'jquery', 'underscore' ), DT_VERSION, true );
-	wp_localize_script(
-		'dt-push',
-		'dt',
-		array(
-			'nonce'                => wp_create_nonce( 'dt-push' ),
-			'loadConnectionsNonce' => wp_create_nonce( 'dt-load-connections' ),
-			'postId'               => (int) get_the_ID(),
-			'ajaxurl'              => esc_url( admin_url( 'admin-ajax.php' ) ),
-			'messages'             => array(
-				'ajax_error'   => __( 'Ajax error:', 'distributor' ),
-				'empty_result' => __( 'Received empty result.', 'distributor' ),
-			),
+	$push_script   = new EnqueueScript( 'dt-push', 'push.min' );
+	$localize_data = array(
+		'nonce'                => wp_create_nonce( 'dt-push' ),
+		'loadConnectionsNonce' => wp_create_nonce( 'dt-load-connections' ),
+		'postId'               => (int) get_the_ID(),
+		'postTitle'            => get_the_title(),
+		'postStatus'           => get_post_status(),
+		'ajaxurl'              => esc_url( admin_url( 'admin-ajax.php' ) ),
 
-			/**
-			 * Filter whether front end ajax requests should use xhrFields credentials:true.
-			 *
-			 * Front end ajax requests may require xhrFields with credentials when the front end and
-			 * back end domains do not match. This filter lets themes opt in.
-			 * See {@link https://vip.wordpress.com/documentation/handling-frontend-file-uploads/#handling-ajax-requests}
-			 *
-			 * @since 1.0.0
-			 * @hook dt_ajax_requires_with_credentials
-			 *
-			 * @param {bool} false Whether front end ajax requests should use xhrFields credentials:true.
-			 *
-			 * @return {bool} Whether front end ajax requests should use xhrFields credentials:true.
-			 */
-			'usexhr'               => apply_filters( 'dt_ajax_requires_with_credentials', false ),
-		)
+		/**
+		 * Filter whether front end ajax requests should use xhrFields credentials:true.
+		 *
+		 * Front end ajax requests may require xhrFields with credentials when the front end and
+		 * back end domains do not match. This filter lets themes opt in.
+		 * See {@link https://vip.wordpress.com/documentation/handling-frontend-file-uploads/#handling-ajax-requests}
+		 *
+		 * @since 1.0.0
+		 * @hook dt_ajax_requires_with_credentials
+		 *
+		 * @param {bool} false Whether front end ajax requests should use xhrFields credentials:true.
+		 *
+		 * @return {bool} Whether front end ajax requests should use xhrFields credentials:true.
+		 */
+		'usexhr'               => apply_filters( 'dt_ajax_requires_with_credentials', false ),
+	);
+
+	$push_script
+		->load_in_footer()
+		->register_localize_data( 'dt', $localize_data )
+		->register_translations()
+		->enqueue();
+
+	wp_enqueue_style(
+		'dt-push',
+		plugins_url( '/dist/css/push.min.css', __DIR__ ),
+		array(),
+		$push_script->get_version()
 	);
 }
 
@@ -441,7 +456,7 @@ function enqueue_scripts( $hook ) {
  */
 function add_element_xpaths( $xpaths = [] ) {
 	if ( ! syndicatable() ) {
-		// return $xpaths;
+		return $xpaths;
 	}
 
 	$ids = [
@@ -466,7 +481,7 @@ function add_element_xpaths( $xpaths = [] ) {
  */
 function add_dev_mode_to_assets( $tag, $handle ) {
 	if ( is_admin() || ! syndicatable() || ! function_exists( 'amp_is_request' ) || ! amp_is_request() ) {
-		// return $tag;
+		return $tag;
 	}
 
 	$script_handles = [
@@ -494,7 +509,7 @@ function add_dev_mode_to_assets( $tag, $handle ) {
  */
 function menu_button( $wp_admin_bar ) {
 	if ( ! syndicatable() ) {
-		//return;
+		return;
 	}
 
 	$wp_admin_bar->add_node(
@@ -548,14 +563,15 @@ function get_site_url_from_rest_url( $rest_url ) {
  */
 function menu_content() {
 	global $post;
-echo "hello";
+
 	if ( ! syndicatable() ) {
-		// return;
+		return;
 	}
 
-	$unlinked         = (bool) get_post_meta( $post->ID, 'dt_unlinked', true );
-	$original_blog_id = get_post_meta( $post->ID, 'dt_original_blog_id', true );
-	$original_post_id = get_post_meta( $post->ID, 'dt_original_post_id', true );
+	$unlinked              = (bool) get_post_meta( $post->ID, 'dt_unlinked', true );
+	$original_blog_id      = get_post_meta( $post->ID, 'dt_original_blog_id', true );
+	$original_post_id      = get_post_meta( $post->ID, 'dt_original_post_id', true );
+	$original_post_deleted = get_post_meta( $post->ID, 'dt_original_post_deleted', true );
 
 	if ( ! empty( $original_blog_id ) && ! empty( $original_post_id ) && ! $unlinked && is_multisite() ) {
 		switch_to_blog( $original_blog_id );
@@ -571,11 +587,38 @@ echo "hello";
 			<div class="inner">
 				<p class="syndicated-notice">
 					<?php /* translators: %s: post type name */ ?>
-					<?php printf( esc_html__( 'This %s has been distributed from', 'distributor' ), esc_html( strtolower( $post_type_object->labels->singular_name ) ) ); ?>
-					<a href="<?php echo esc_url( $site_url ); ?>"><?php echo esc_html( $blog_name ); ?></a>.
 
-					<?php esc_html_e( 'You can ', 'distributor' ); ?>
-					<a href="<?php echo esc_url( $post_url ); ?>"><?php esc_html_e( 'view the original', 'distributor' ); ?></a>
+					<?php
+					printf(
+						/* translators: 1) Distributor post type singular name, 2) Source of content. */
+						esc_html__( 'This %1$s was distributed from %2$s.', 'distributor' ),
+						esc_html( strtolower( $post_type_object->labels->singular_name ) ),
+						'<a href="' . esc_url( $site_url ) . '">' . esc_html( $blog_name ) . '</a>'
+					);
+
+					if ( $original_post_deleted ) {
+						echo ' '; // Ensure whitespace between sentences.
+						printf(
+							/* translators: 1: post type name */
+							esc_html__( 'However, the origin %1$s has been deleted.', 'distributor' ),
+							esc_html( strtolower( $post_type_object->labels->singular_name ) )
+						);
+					} elseif ( ! empty( $post_url ) ) {
+						?>
+						<a href="<?php echo esc_url( $post_url ); ?>" target="_blank">
+							<?php
+							echo wp_kses_post(
+								sprintf(
+									/* translators: 1) Distributor post type singular name. */
+									__( 'View the origin %1$s.', 'distributor' ),
+									esc_html( strtolower( $post_type_object->labels->singular_name ) ),
+								)
+							);
+							?>
+						</a>
+						<?php
+					}
+					?>
 				</p>
 			</div>
 		</div>

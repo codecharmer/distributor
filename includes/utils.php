@@ -7,6 +7,19 @@
 
 namespace Distributor\Utils;
 
+use Distributor\DistributorPost;
+
+/**
+ * Determine if this is a development install of Distributor.
+ *
+ * @since 2.0.0
+ *
+ * @return bool True if this is a development install, false otherwise.
+ */
+function is_development_version() {
+	return file_exists( DT_PLUGIN_PATH . 'composer.lock' );
+}
+
 /**
  * Determine if we are on VIP
  *
@@ -106,6 +119,9 @@ function check_license_key( $email, $license_key ) {
 		[
 			// phpcs:ignore WordPressVIPMinimum.Performance.RemoteRequestTimeout.timeout_timeout
 			'timeout' => 10,
+			'headers' => [
+				'X-Distributor-Version' => DT_VERSION,
+			],
 			'body'    => [
 				'license_key' => $license_key,
 				'email'       => $email,
@@ -143,6 +159,21 @@ function is_dt_debug() {
  * @param array $meta Array of meta as key => value
  */
 function set_meta( $post_id, $meta ) {
+	/**
+	 * Fires before Distributor sets post meta.
+	 *
+	 * All sent meta is included in the `$meta` array, including excluded keys.
+	 * Any excluded keys returned in this filter will be subsequently removed
+	 * from the saved meta data.
+	 *
+	 * @since 2.0.0
+	 * @hook dt_before_set_meta
+	 *
+	 * @param {array} $meta          All received meta for the post
+	 * @param {int}   $post_id       Post ID
+	 */
+	$meta = apply_filters( 'dt_before_set_meta', $meta, $post_id );
+
 	$existing_meta = get_post_meta( $post_id );
 	$excluded_meta = excluded_meta();
 
@@ -180,6 +211,7 @@ function set_meta( $post_id, $meta ) {
 	 *
 	 * @since 1.3.8
 	 * @hook dt_after_set_meta
+	 * @tutorial snippets
 	 *
 	 * @param {array} $meta          All received meta for the post
 	 * @param {array} $existing_meta Existing meta for the post
@@ -281,6 +313,7 @@ function distributable_post_types( $output = 'names' ) {
 	 *
 	 * @since 1.0.0
 	 * @hook distributable_post_types
+	 * @tutorial snippets
 	 *
 	 * @param {array} Post types that are distributable.
 	 *
@@ -325,18 +358,18 @@ function distributable_post_statuses() {
  * Returns list of excluded meta keys
  *
  * @since  1.2
- * @deprecated X.X.X Use excluded_meta()
+ * @deprecated 1.9.0 Use excluded_meta()
  * @return array
  */
 function blacklisted_meta() {
-	_deprecated_function( __FUNCTION__, 'X.X.X', '\Distributor\Utils\excluded_meta()' );
+	_deprecated_function( __FUNCTION__, '1.9.0', '\Distributor\Utils\excluded_meta()' );
 	return excluded_meta();
 }
 
 /**
  * Returns list of excluded meta keys
  *
- * @since  X.X.X
+ * @since  1.9.0
  * @return array
  */
 function excluded_meta() {
@@ -345,7 +378,7 @@ function excluded_meta() {
 	 * Filter meta keys that are excluded from distribution.
 	 *
 	 * @since 1.0.0
-	 * @deprecated x.x.x
+	 * @deprecated 1.9.0 Use dt_excluded_meta
 	 *
 	 * @param array $meta_keys Excluded meta keys.
 	 *
@@ -355,24 +388,25 @@ function excluded_meta() {
 		'dt_blacklisted_meta',
 		[
 			[
+				'classic-editor-remember',
 				'dt_unlinked',
-				'dt_connection_map',
-				'dt_subscription_update',
-				'dt_subscriptions',
-				'dt_subscription_signature',
-				'dt_original_post_id',
-				'dt_original_post_url',
-				'dt_original_blog_id',
 				'dt_syndicate_time',
-				'_wp_attached_file',
-				'_wp_attachment_metadata',
-				'_edit_lock',
-				'_edit_last',
+				'dt_subscriptions',
+				'dt_subscription_update',
+				'dt_subscription_signature',
+				'dt_original_post_url',
+				'dt_original_post_id',
+				'dt_original_blog_id',
+				'dt_connection_map',
 				'_wp_old_slug',
 				'_wp_old_date',
+				'_wp_attachment_metadata',
+				'_wp_attached_file',
+				'_edit_lock',
+				'_edit_last',
 			],
 		],
-		'X.X.X',
+		'1.9.0',
 		'dt_excluded_meta',
 		__( 'Please consider writing more inclusive code.', 'distributor' )
 	);
@@ -380,8 +414,9 @@ function excluded_meta() {
 	/**
 	 * Filter meta keys that are excluded from distribution.
 	 *
-	 * @since X.X.X
+	 * @since 1.9.0
 	 * @hook dt_excluded_meta
+	 * @tutorial snippets
 	 *
 	 * @param {array} $meta_keys Excluded meta keys. Default `dt_unlinked, dt_connection_map, dt_subscription_update, dt_subscriptions, dt_subscription_signature, dt_original_post_id, dt_original_post_url, dt_original_blog_id, dt_syndicate_time, _wp_attached_file, _wp_attachment_metadata, _edit_lock, _edit_last, _wp_old_slug, _wp_old_date`.
 	 *
@@ -398,6 +433,7 @@ function excluded_meta() {
  * @return array
  */
 function prepare_meta( $post_id ) {
+	update_postmeta_cache( array( $post_id ) );
 	$meta          = get_post_meta( $post_id );
 	$prepared_meta = array();
 	$excluded_meta = excluded_meta();
@@ -427,6 +463,23 @@ function prepare_meta( $post_id ) {
 		}
 	}
 
+	/**
+	 * Filter prepared meta for consumption.
+	 *
+	 * Modify meta data before it is sent for consumption by a distributed
+	 * post. The prepared meta data should not include any excluded meta.
+	 * see `excluded_meta()`.
+	 *
+	 * @since 2.0.0
+	 * @hook dt_prepared_meta
+	 *
+	 * @param {array} $prepared_meta Prepared meta.
+	 * @param {int}   $post_id      Post ID.
+	 *
+	 * @return {array} Prepared meta.
+	 */
+	$prepared_meta = apply_filters( 'dt_prepared_meta', $prepared_meta, $post_id );
+
 	return $prepared_meta;
 }
 
@@ -438,30 +491,12 @@ function prepare_meta( $post_id ) {
  * @return array
  */
 function prepare_media( $post_id ) {
-	$raw_media   = get_attached_media( get_allowed_mime_types(), $post_id );
-	$media_array = array();
-
-	$featured_image_id = get_post_thumbnail_id( $post_id );
-	$found_featured    = false;
-
-	foreach ( $raw_media as $media_post ) {
-		$media_item = format_media_post( $media_post );
-
-		if ( $media_item['featured'] ) {
-			$found_featured = true;
-		}
-
-		$media_array[] = $media_item;
+	$dt_post = new DistributorPost( $post_id );
+	if ( ! $dt_post ) {
+		return array();
 	}
 
-	if ( ! empty( $featured_image_id ) && ! $found_featured ) {
-		$featured_image             = format_media_post( get_post( $featured_image_id ) );
-		$featured_image['featured'] = true;
-
-		$media_array[] = $featured_image;
-	}
-
-	return $media_array;
+	return $dt_post->get_media();
 }
 
 /**
@@ -475,6 +510,13 @@ function prepare_media( $post_id ) {
  */
 function prepare_taxonomy_terms( $post_id, $args = array() ) {
 	$post = get_post( $post_id );
+
+	if ( ! $post ) {
+		return array();
+	}
+
+	// Warm the term cache for the post.
+	update_object_term_cache( array( $post->ID ), $post->post_type );
 
 	if ( empty( $args ) ) {
 		$args = array( 'publicly_queryable' => true );
@@ -499,6 +541,23 @@ function prepare_taxonomy_terms( $post_id, $args = array() ) {
 	foreach ( $taxonomies as $taxonomy ) {
 		$taxonomy_terms[ $taxonomy ] = wp_get_object_terms( $post_id, $taxonomy );
 	}
+
+	/**
+	 * Filters the taxonomy terms for consumption.
+	 *
+	 * Modify taxonomies and terms prior to distribution. The array should be
+	 * keyed by taxonomy. The returned data by filters should only return
+	 * taxonomies permitted for distribution. See the `dt_syncable_taxonomies` hook.
+	 *
+	 * @since 2.0.0
+	 * @hook dt_prepared_taxonomy_terms
+	 *
+	 * @param {array} $taxonomy_terms Associative array of terms keyed by taxonomy.
+	 * @param {int}   $post_id        Post ID.
+	 *
+	 * @param {array} $args           Modified array of terms keyed by taxonomy.
+	 */
+	$taxonomy_terms = apply_filters( 'dt_prepared_taxonomy_terms', $taxonomy_terms, $post_id );
 
 	return $taxonomy_terms;
 }
@@ -853,11 +912,11 @@ function process_media( $url, $post_id, $args = [] ) {
 	 * @since 1.3.7
 	 * @hook dt_media_processing_filename
 	 *
-	 * @param {string} $media_name Filemame of the media being processed.
+	 * @param {string} $media_name Filename of the media being processed.
 	 * @param {string} $url        Media url.
 	 * @param {int}    $post_id    Post ID.
 	 *
-	 * @return {string} Filemame of the media being processed.
+	 * @return {string} Filename of the media being processed.
 	 */
 	$media_name = apply_filters( 'dt_media_processing_filename', $media_name, $url, $post_id );
 
@@ -913,6 +972,11 @@ function process_media( $url, $post_id, $args = [] ) {
 
 	// Default for external or if a local file copy failed.
 	if ( $download_url ) {
+
+		// Set the scheme to http: if a relative URL is specified.
+		if ( str_starts_with( $url, '//' ) ) {
+			$url = 'http:' . $url;
+		}
 
 		// Allows to pull media from local IP addresses
 		// Uses a "magic number" for priority so we only unhook our call, just in case.
@@ -1188,4 +1252,22 @@ function remote_http_request( $url, $args = array(), $fallback = '', $threshold 
 	}
 
 	return wp_remote_request( $url, $args );
+}
+
+/**
+ * Determines if a post is distributed.
+ *
+ * @since 2.0.0
+ *
+ * @param int|\WP_Post $post The post object or ID been checked.
+ * @return bool True if the post is distributed, false otherwise.
+ */
+function is_distributed_post( $post ) {
+	$post = get_post( $post );
+	if ( ! $post ) {
+		return false;
+	}
+	$post_id          = $post->ID;
+	$original_post_id = get_post_meta( $post_id, 'dt_original_post_id', true );
+	return ! empty( $original_post_id );
 }

@@ -1,1 +1,1 @@
-<?php return array('dependencies' => array('jquery', 'underscore', 'wp-a11y', 'wp-polyfill', 'wp-url'), 'version' => '4142bbcf87c4bad9aa6c');
+<?php return array('dependencies' => array('jquery', 'underscore', 'wp-a11y', 'wp-i18n', 'wp-polyfill', 'wp-url'), 'version' => '242ebe5472159cee23d3');
